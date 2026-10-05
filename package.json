@@ -1,0 +1,28 @@
+{
+  "name": "opencode-session-summarizer",
+  "version": "0.1.0",
+  "description": "Turn exported OpenCode session transcripts into compact, persistent project memory.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "install:command": "node scripts/install-command.mjs",
+    "summarize": "node .opencode/scripts/summarize-prepare.mjs",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "files": [
+    ".opencode",
+    "scripts",
+    "src",
+    "README.md"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "session",
+    "summary",
+    "project-memory"
+  ]
+}

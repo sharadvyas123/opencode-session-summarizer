@@ -1,0 +1,12 @@
+node_modules/
+.opencode/node_modules/
+.opencode/package.json
+.opencode/package-lock.json
+.opencode/bun.lock
+opencode.json
+opencode.jsonc
+.env
+*.log
+*-summary.md
+!examples/*-summary.md
+Project_sessions/
