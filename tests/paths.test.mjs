@@ -124,3 +124,12 @@ test("deriveOutputPath refuses to overwrite a raw export", () => {
     /refusing to write the summary over a raw session export/,
   )
 })
+
+test("deriveOutputPath supports .markdown without colliding with the raw export", () => {
+  const root = tempProject()
+  const input = path.join(root, "Sessions", "session003.markdown")
+  fs.writeFileSync(input, "# Session: three\n")
+  const output = deriveOutputPath({ cwd: root, inputs: [{ absolute: input }], directory: null, output: null })
+  assert.equal(output.absolute, path.join(root, "Sessions", "session003-summary.md"))
+  assert.equal(isSummaryArtifact("session003-summary.markdown"), true)
+})

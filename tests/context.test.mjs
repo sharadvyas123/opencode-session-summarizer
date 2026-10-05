@@ -64,8 +64,24 @@ test("selectBlocks honours the context budget", () => {
     text: `block ${index} ${"z".repeat(500)}`,
   }))
   const selection = selectBlocks(blocks, { maxChars: 1200 })
-  assert.ok(selection.usedChars <= 2400)
+  assert.ok(selection.usedChars <= 1200)
+  assert.equal(selection.usedChars, selection.kept.join("\n\n").length)
   assert.ok(selection.droppedOverBudget > 0)
+})
+
+test("selectBlocks counts a single anchor once and respects tiny budgets", () => {
+  const single = selectBlocks([{ heading: "user", text: "one objective" }])
+  assert.equal(single.usedChars, "one objective".length)
+  assert.deepEqual(single.kept, ["one objective"])
+  const blocks = [
+    { heading: "user", text: "objective ".repeat(100) },
+    { heading: "assistant", text: "current state ".repeat(100) },
+  ]
+  for (const maxChars of [1, 2, 3, 30, 500]) {
+    const selection = selectBlocks(blocks, { maxChars })
+    assert.ok(selection.usedChars <= maxChars)
+    assert.equal(selection.usedChars, selection.kept.join("\n\n").length)
+  }
 })
 
 test("buildPreparedContext produces coverage counters and signals", async () => {

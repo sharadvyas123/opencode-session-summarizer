@@ -12,12 +12,13 @@ OpenCode /export  ->  Sessions/session123.md  ->  /summarize  ->  Sessions/sessi
 
 ## Verified environment
 
-Built and verified against the versions actually installed on this machine:
+OpenCode integration was originally verified on Windows. The rolling-memory
+helper and automated tests are also verified on Linux using:
 
 | Component  | Version                            |
 | ---------- | ---------------------------------- |
-| opencode-ai| `1.18.34` (npm global, Windows)    |
-| Node.js    | `22.x`                             |
+| opencode-ai| `1.18.34`                          |
+| Node.js    | `22.23.3`                          |
 
 No build step, no bundler, no runtime dependencies. Plain ESM runs on both Node
 and Bun.
@@ -34,17 +35,17 @@ and Bun.
 local helper (deterministic, no LLM)
   1. parse arguments
   2. validate paths, refuse unsafe writes
-  3. discover / read session markdown
+  3. discover / read session markdown and optional prior memory
   4. split transcript into blocks
-  5. score, filter, truncate -> token-efficient context
+  5. preserve full prior memory; score/filter new transcript context within budget
   6. extract signals (files, errors, commands, open items)
   7. choose a safe output path
         |
         v
-report on stdout (STATUS / OUTPUT_PATH / SIGNALS / SESSION_CONTEXT / INSTRUCTIONS)
+report on stdout (STATUS / OUTPUT_PATH / SIGNALS / PRIOR_MEMORY / SESSION_CONTEXT / INSTRUCTIONS)
         |
         v
-the current OpenCode model writes the summary to OUTPUT_PATH
+the current OpenCode model writes or updates the summary at OUTPUT_PATH
 ```
 
 Why a custom command and not a plugin? OpenCode's documented slash-command
@@ -81,6 +82,8 @@ opencode
 ```
 
 No global install and no `opencode.json` change is required.
+After installing or updating the command, quit and restart OpenCode so it loads
+the new command template.
 
 ## Usage
 
@@ -91,14 +94,16 @@ Inside OpenCode:
 /summarize -f Sessions/session001.md Sessions/session002.md
 /summarize -d Sessions
 /summarize -f Sessions/session001.md -o Sessions/project-summary.md
+/summarize --memory Sessions/project-summary.md -f Sessions/session004.md -o Sessions/project-summary.md
 /summarize --help
 ```
 
 | Flag                | Meaning                                                        |
 | ------------------- | -------------------------------------------------------------- |
 | `-f`, `--files`     | One or more exported session `.md` files (bare paths also work) |
-| `-d`, `--dir`       | Directory of exported sessions; reads `*.md` only              |
+| `-d`, `--dir`       | Directory of exported sessions; reads `*.md` / `*.markdown`     |
 | `-o`, `--output`    | Explicit output path                                            |
+| `-m`, `--memory`    | Existing summary to update using new raw session exports        |
 | `-h`, `--help`      | Usage                                                           |
 
 Default output naming:
@@ -107,6 +112,7 @@ Default output naming:
 | ------------------------------------ | ----------------------------- |
 | one file                             | `<name>-summary.md` next to it |
 | several files, or a directory        | `project-summary.md` in that directory |
+| prior memory + new session(s)        | `project-summary.md` next to the prior memory |
 
 You can also run the helper directly, which is handy for debugging:
 
@@ -114,14 +120,68 @@ You can also run the helper directly, which is handy for debugging:
 node .opencode/summarizer/scripts/summarize-prepare.mjs -f Sessions/session001.md
 ```
 
+### Rolling project memory
+
+First, generate your initial memory:
+
+```text
+/summarize -f Sessions/session001.md -o Sessions/project-summary.md
+```
+
+After exporting a new session, update that memory:
+
+```text
+/summarize --memory Sessions/project-summary.md -f Sessions/session004.md -o Sessions/project-summary.md
+```
+
+The original planned syntax also works:
+
+```text
+/summarize -f Sessions/project-summary.md Sessions/session004.md -o Sessions/project-summary.md
+```
+
+You can combine multiple new exports, use a directory containing new exports,
+or write the updated memory to a different file:
+
+```text
+/summarize -m Sessions/project-summary.md -f Sessions/session004.md Sessions/session005.md -o Sessions/project-summary.md
+/summarize -m Sessions/project-summary.md -d Sessions/new -o Sessions/project-summary.md
+/summarize -m Sessions/project-summary.md -f Sessions/session004.md -o Archive/project-summary.md
+```
+
+- Only one prior summary and at least one new raw session are allowed.
+- Prior memory must start with `# Session Summary` or `# Project Summary` and
+  contain summary content. Filenames alone do not authorize replacing a file.
+- With `-f`, summaries are recognized by their heading or validated when their
+  name matches `*-summary.md` / `*-summary.markdown`. Use `--memory` to identify
+  prior memory explicitly, including custom-named summaries.
+- The helper emits the complete prior summary in `PRIOR_MEMORY` and only new
+  transcript material in `SESSION_CONTEXT`.
+- The model is instructed to preserve relevant decisions and unresolved tasks,
+  replace stale facts, move completed tasks out of remaining work, and
+  deduplicate the result into one self-contained summary.
+- Supply new session files in chronological order. Directory mode uses filename
+  order, so use sortable filenames and a directory containing the new exports.
+  Ambiguous contradictions should be recorded rather than guessed away.
+- Updating an existing file requires an explicit `-o`; providing `--memory`
+  alone does not authorize replacing the default output.
+
+`tests/fixtures/prior-memory.md` and `tests/fixtures/session-followup.md` show
+the inputs. `examples/session-followup-summary.md` illustrates the expected
+updated memory: recall changes to 0.81, completed tasks are removed from remaining
+work, and cache invalidation/profiling remain open.
+
 ### Output safety
 
 - Only `.md` / `.markdown` files are accepted as input.
-- Directory mode skips hidden files and any `*-summary.md` / `project-summary.md`
-  this tool already produced, so summaries are never re-summarized.
+- Directory mode skips hidden files, `*-summary.md` / `*-summary.markdown`, and
+  custom-named files whose first heading identifies a summary. Prior memory is
+  selected explicitly with `--memory`, not automatically from a directory.
 - Raw exports are never overwritten. Writing a summary over an input file is a
   hard error.
 - An existing default output is never silently replaced; pass `-o` explicitly.
+  Existing explicit outputs must be recognized summaries, not raw transcripts.
+  Symbolic-link outputs and aliases of raw input files are rejected.
 - Missing files, missing directories, empty files, and unreadable paths produce
   a `STATUS: ERROR` report and nothing is written.
 - Missing output directories are created for you.
@@ -131,13 +191,26 @@ node .opencode/summarizer/scripts/summarize-prepare.mjs -f Sessions/session001.m
 `SUMMARIZE_MAX_CHARS` controls the context budget (default `12000`):
 
 ```bash
-SUMMARIZE_MAX_CHARS=20000 /summarize -d Sessions
+# Set the environment before launching OpenCode (Bash):
+SUMMARIZE_MAX_CHARS=20000 opencode
 ```
+
+```powershell
+# PowerShell:
+$env:SUMMARIZE_MAX_CHARS = "20000"
+opencode
+```
+
+In rolling mode, the full prior memory and selected new transcript blocks share
+this budget. Prior memory is never silently truncated: if it fills the budget,
+the helper returns an error asking you to raise the limit or shorten the memory.
+The budget measures context characters, not exact tokens or total prompt size;
+report metadata, signals, and instructions add overhead.
 
 The report includes a `COVERAGE:` line so you can see how much was dropped:
 
 ```
-COVERAGE: files=1 rawChars=2418 blocks=11 kept=11 droppedFiller=0 droppedOverBudget=0 contextChars=2398 budgetChars=12000
+COVERAGE: files=1 rawChars=2418 blocks=11 kept=11 droppedFiller=0 droppedOverBudget=0 contextChars=2398 budgetChars=12000 memoryChars=0 sessionContextChars=2398
 ```
 
 ## Summary schema
@@ -170,17 +243,21 @@ produced from `tests/fixtures/session-example.md` is in
 npm test
 ```
 
-55 tests, no LLM and no network required. They cover argument parsing,
-validation, discovery, output derivation, context reduction, signal extraction,
-error reporting, and a full install-and-run of the installed bundle.
+Tests require no LLM and no network. They cover argument parsing, validation,
+discovery, output derivation, context reduction, signal extraction, error
+reporting, rolling-memory preparation, strict shared budgets, raw-file
+preservation, and an install-and-run of the standalone bundle. They verify the
+context and merge instructions; the semantic summary/update is performed by the
+current OpenCode model.
 
 ## Current status
 
-Done: V0 (command registration verified with `opencode debug config`) and V1
-(single file, multi file, directory, explicit output, safety rails).
+Done: V0–V4 (command registration, single file, multiple files, directory,
+explicit output) and V5 (rolling `old summary + new session -> updated summary`).
+V0 command registration was verified with `opencode debug config`.
 
-Not done yet: rolling `old summary + new session -> updated summary`, the
-`/summarize` current-session mode, configurable schema, and smarter reduction.
+Not done yet: `/summarize` current-session mode, configurable schema, and
+smarter reduction (V6).
 No vector database, embeddings, RAG, database, GUI, or telemetry.
 
 ## License

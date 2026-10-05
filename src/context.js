@@ -1,3 +1,5 @@
+import { SummarizeError } from "./errors.js"
+
 export const DEFAULT_MAX_CHARS = 12000
 const DEFAULT_MAX_BLOCK_CHARS = 1200
 const DEFAULT_CODE_SAMPLE_CHARS = 280
@@ -127,40 +129,75 @@ export function selectBlocks(blocks, { maxChars = DEFAULT_MAX_CHARS } = {}) {
   }))
 
   const ranked = [...scored].sort((left, right) => right.score - left.score)
-  const keep = new Set()
-  const anchors = [scored[0]?.position, scored[scored.length - 1]?.position].filter(
+  const keep = new Map()
+  const anchors = [...new Set([scored[0]?.position, scored[scored.length - 1]?.position])].filter(
     (position) => position !== undefined,
   )
 
   let used = 0
-  for (const position of anchors) {
-    const reduced = reduceBlock(scored[position].block.text)
-    keep.add(position)
-    used += reduced.length
+  for (const [index, position] of anchors.entries()) {
+    const reduced = reduceContextBlock(scored[position].block)
+    const separatorChars = keep.size > 0 ? 2 : 0
+    const remainingAnchors = anchors.length - index
+    const available = maxChars - used - separatorChars - (remainingAnchors - 1) * 2
+    const allowance = Math.max(0, Math.floor(available / remainingAnchors))
+    const fitted = fitBlock(reduced, allowance)
+    if (!fitted) continue
+    keep.set(position, fitted)
+    used += fitted.length + separatorChars
   }
 
   for (const entry of ranked) {
     if (entry.filler) continue
     if (keep.has(entry.position)) continue
-    const reduced = reduceBlock(entry.block.text)
-    if (used + reduced.length > maxChars) continue
-    keep.add(entry.position)
-    used += reduced.length
+    const reduced = reduceContextBlock(entry.block)
+    const separatorChars = keep.size > 0 ? 2 : 0
+    if (used + reduced.length + separatorChars > maxChars) continue
+    keep.set(entry.position, reduced)
+    used += reduced.length + separatorChars
   }
 
-  const kept = [...keep].sort((left, right) => left - right).map((position) => scored[position])
+  const positions = [...keep.keys()].sort((left, right) => left - right)
 
   return {
-    kept: kept.map((entry) => reduceBlock(entry.block.text)),
-    droppedFiller: scored.filter((entry) => entry.filler).length,
+    kept: positions.map((position) => keep.get(position)),
+    droppedFiller: scored.filter((entry) => entry.filler && !keep.has(entry.position)).length,
     droppedOverBudget: scored.filter((entry) => !entry.filler && !keep.has(entry.position)).length,
     usedChars: used,
   }
 }
 
-export function buildPreparedContext({ documents, outputPath, maxChars = DEFAULT_MAX_CHARS }) {
-  const blocks = documents.flatMap((document) => splitBlocks(document.content))
-  const selection = selectBlocks(blocks, { maxChars })
+function fitBlock(text, allowance) {
+  if (text.length <= allowance) return text
+  const marker = "\n[truncated]"
+  if (allowance <= marker.length) return text.slice(0, allowance)
+  return text.slice(0, allowance - marker.length) + marker
+}
+
+function reduceContextBlock(block) {
+  const reduced = reduceBlock(block.text)
+  return block.source ? `SOURCE_FILE: ${block.source}\n${reduced}` : reduced
+}
+
+export function buildPreparedContext({ documents, outputPath, maxChars = DEFAULT_MAX_CHARS, memory = null }) {
+  if (!Number.isInteger(maxChars) || maxChars <= 0) {
+    throw new SummarizeError("context budget must be a positive integer")
+  }
+
+  const memoryContent = memory ? memory.content.trim() : ""
+  const memoryChars = memoryContent.length
+  if (memoryChars >= maxChars) {
+    throw new SummarizeError(
+      `prior memory uses ${memoryChars} characters and leaves no room for new sessions within the ${maxChars}-character budget`,
+      "Increase SUMMARIZE_MAX_CHARS or shorten the prior summary. Prior memory is never silently truncated.",
+    )
+  }
+
+  const blocks = documents.flatMap((document) => splitBlocks(document.content).map((block) => ({
+    ...block,
+    source: document.relative,
+  })))
+  const selection = selectBlocks(blocks, { maxChars: maxChars - memoryChars })
   const signals = extractSignals(documents)
 
   return {
@@ -168,7 +205,10 @@ export function buildPreparedContext({ documents, outputPath, maxChars = DEFAULT
     documents: documents.map((document) => ({ path: document.relative, bytes: document.bytes })),
     blocks: { total: blocks.length, kept: selection.kept.length, droppedFiller: selection.droppedFiller, droppedOverBudget: selection.droppedOverBudget },
     rawChars: documents.reduce((total, document) => total + document.content.length, 0),
-    contextChars: selection.usedChars,
+    memory: memory ? { path: memory.relative, bytes: memory.bytes, content: memoryContent } : null,
+    memoryChars,
+    sessionContextChars: selection.usedChars,
+    contextChars: memoryChars + selection.usedChars,
     maxChars,
     signals,
     context: selection.kept,

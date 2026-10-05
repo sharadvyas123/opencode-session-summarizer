@@ -4,19 +4,23 @@ export const USAGE = `Usage:
   /summarize -f <session.md> [more.md ...]
   /summarize -d <sessions-directory>
   /summarize -f <session.md> -o <output.md>
+  /summarize --memory <summary.md> -f <new-session.md> -o <summary.md>
 
 Options:
   -f, --files    exported OpenCode session markdown file(s)
   -d, --dir      directory containing exported session markdown files
   -o, --output   explicit output markdown path (default: <name>-summary.md)
+  -m, --memory   existing project summary to merge with new session(s)
   -h, --help     show this help
 
-Bare paths are treated as session files. Directory mode only reads *.md and
-skips artifacts that were already produced by this tool.`
+Bare paths are treated as session files. Directory mode reads *.md / *.markdown and
+skips artifacts that were already produced by this tool. A summary passed with
+-f is recognized as prior memory. Updating existing memory requires explicit -o.`
 
 const FILES_FLAGS = new Set(["-f", "--file", "--files"])
 const DIR_FLAGS = new Set(["-d", "--dir", "--directory"])
 const OUTPUT_FLAGS = new Set(["-o", "--out", "--output"])
+const MEMORY_FLAGS = new Set(["-m", "--memory"])
 const HELP_FLAGS = new Set(["-h", "--help"])
 
 export function tokenize(input) {
@@ -75,7 +79,7 @@ function collectValues(tokens, start) {
 
 export function parseArguments(input) {
   const tokens = Array.isArray(input) ? input.map(String) : tokenize(input)
-  const parsed = { files: [], dir: null, output: null, help: false, errors: [] }
+  const parsed = { files: [], dir: null, output: null, memory: null, help: false, errors: [] }
 
   let index = 0
   while (index < tokens.length) {
@@ -114,6 +118,19 @@ export function parseArguments(input) {
         parsed.errors.push(`${token} expects exactly one output markdown path`)
       } else {
         parsed.output = values[0]
+      }
+      index += consumed + 1
+      continue
+    }
+
+    if (MEMORY_FLAGS.has(token)) {
+      const { values, consumed } = collectValues(tokens, index + 1)
+      if (values.length !== 1) {
+        parsed.errors.push(`${token} expects exactly one project summary path`)
+      } else if (parsed.memory) {
+        parsed.errors.push("only one prior project summary may be provided")
+      } else {
+        parsed.memory = values[0]
       }
       index += consumed + 1
       continue

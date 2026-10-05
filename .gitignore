@@ -9,4 +9,3 @@ opencode.jsonc
 *.log
 *-summary.md
 !examples/*-summary.md
-Project_sessions/

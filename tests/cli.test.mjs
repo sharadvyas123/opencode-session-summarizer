@@ -60,7 +60,7 @@ test("run reports a missing file and writes nothing", async () => {
   assert.equal(result.outputPath, null)
   assert.match(result.text, /STATUS: ERROR/)
   assert.match(result.text, /ERROR: session file not found: Sessions\/nope\.md/)
-  assert.match(result.text, /No files were read for summarization/)
+  assert.match(result.text, /No summary was written/)
 })
 
 test("run reports an empty file", async () => {

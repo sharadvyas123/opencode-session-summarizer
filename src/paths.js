@@ -3,7 +3,7 @@ import path from "node:path"
 import { SummarizeError } from "./errors.js"
 
 const MARKDOWN_EXTENSIONS = new Set([".md", ".markdown"])
-const SUMMARY_ARTIFACT = /(^|-)summary\.mdx?$/i
+const SUMMARY_ARTIFACT = /(^|-)summary\.(md|markdown)$/i
 const PROJECT_SUMMARY_NAME = "project-summary.md"
 const EMPTY_FILE_BYTES = 0
 
@@ -24,13 +24,13 @@ export function toRelative(cwd, target) {
   return relative === "" ? "." : relative.split(path.sep).join("/")
 }
 
-export function readSessionFile(cwd, target) {
+export function readMarkdownFile(cwd, target, { label, missingHint, emptyHint }) {
   const absolute = resolveAgainst(cwd, target)
 
   if (!isMarkdownPath(absolute)) {
     throw new SummarizeError(
       `${toRelative(cwd, absolute)} is not a markdown file`,
-      "Exported OpenCode session transcripts are .md files.",
+      "Use a .md or .markdown file.",
     )
   }
 
@@ -39,23 +39,45 @@ export function readSessionFile(cwd, target) {
     stats = fs.statSync(absolute)
   } catch {
     throw new SummarizeError(
-      `session file not found: ${toRelative(cwd, absolute)}`,
-      "Check the path, or run /export first and save the session into the project's Sessions/ directory.",
+      `${label} not found: ${toRelative(cwd, absolute)}`,
+      missingHint,
     )
   }
 
   if (!stats.isFile()) {
-    throw new SummarizeError(`${toRelative(cwd, absolute)} is not a file`, "Use -d to summarize a directory of sessions.")
+    throw new SummarizeError(`${toRelative(cwd, absolute)} is not a file`, "Provide a Markdown file path.")
   }
 
   if (stats.size === EMPTY_FILE_BYTES) {
     throw new SummarizeError(
-      `session file is empty: ${toRelative(cwd, absolute)}`,
-      "Nothing to summarize. Re-export the session or pick a different file.",
+      `${label} is empty: ${toRelative(cwd, absolute)}`,
+      emptyHint,
     )
   }
 
-  return { absolute, relative: toRelative(cwd, absolute), bytes: stats.size, content: fs.readFileSync(absolute, "utf8") }
+  const content = fs.readFileSync(absolute, "utf8")
+  if (!content.trim()) {
+    throw new SummarizeError(`${label} is empty: ${toRelative(cwd, absolute)}`, emptyHint)
+  }
+
+  return { absolute, relative: toRelative(cwd, absolute), bytes: stats.size, content }
+}
+
+export function readSessionFile(cwd, target) {
+  return readMarkdownFile(cwd, target, {
+    label: "session file",
+    missingHint: "Check the path, or run /export first and save the session into the project's Sessions/ directory.",
+    emptyHint: "Nothing to summarize. Re-export the session or pick a different file.",
+  })
+}
+
+export function isSameFile(left, right) {
+  if (path.resolve(left) === path.resolve(right)) return true
+  if (!fs.existsSync(left) || !fs.existsSync(right)) return false
+  if (fs.realpathSync(left) === fs.realpathSync(right)) return true
+  const leftStats = fs.statSync(left)
+  const rightStats = fs.statSync(right)
+  return leftStats.ino !== 0 && leftStats.dev === rightStats.dev && leftStats.ino === rightStats.ino
 }
 
 export function discoverSessionFiles(cwd, directory) {
@@ -89,14 +111,14 @@ export function discoverSessionFiles(cwd, directory) {
   if (files.length === 0) {
     throw new SummarizeError(
       `no exported session markdown files found in ${toRelative(cwd, absolute)}`,
-      "Directory mode only reads *.md files and skips summaries this tool already wrote.",
+      "Directory mode reads *.md / *.markdown files and skips summaries this tool already wrote.",
     )
   }
 
   return files.map((name) => path.join(absolute, name))
 }
 
-export function deriveOutputPath({ cwd, inputs, directory, output }) {
+export function deriveOutputPath({ cwd, inputs, directory, output, memory = null }) {
   const inputPaths = inputs.map((input) => resolveAgainst(cwd, input.absolute))
 
   if (output) {
@@ -104,7 +126,7 @@ export function deriveOutputPath({ cwd, inputs, directory, output }) {
     if (!isMarkdownPath(explicit)) {
       throw new SummarizeError(`output path must be a markdown file: ${toRelative(cwd, explicit)}`)
     }
-    if (inputPaths.includes(explicit)) {
+    if (inputPaths.some((input) => isSameFile(input, explicit))) {
       throw new SummarizeError(
         "refusing to write the summary over a raw session export",
         "Choose a different -o path so the raw transcript is preserved.",
@@ -114,15 +136,15 @@ export function deriveOutputPath({ cwd, inputs, directory, output }) {
   }
 
   const directoryMode = Boolean(directory)
-  const singleFile = !directoryMode && inputPaths.length === 1
+  const singleFile = !memory && !directoryMode && inputPaths.length === 1
+  const outputDirectory = memory
+    ? path.dirname(memory.absolute)
+    : directoryMode ? resolveAgainst(cwd, directory) : path.dirname(inputPaths[0])
   const derived = singleFile
-    ? inputPaths[0].replace(/\.mdx?$/i, "-summary.md")
-    : path.join(
-        directoryMode ? resolveAgainst(cwd, directory) : path.dirname(inputPaths[0]),
-        PROJECT_SUMMARY_NAME,
-      )
+    ? inputPaths[0].slice(0, -path.extname(inputPaths[0]).length) + "-summary.md"
+    : path.join(outputDirectory, PROJECT_SUMMARY_NAME)
 
-  if (inputPaths.includes(derived)) {
+  if (inputPaths.some((input) => isSameFile(input, derived))) {
     throw new SummarizeError(
       "refusing to write the summary over a raw session export",
       "Choose a different output path so the raw transcript is preserved.",

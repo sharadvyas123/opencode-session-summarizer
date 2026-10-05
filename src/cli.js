@@ -4,6 +4,7 @@ import process from "node:process"
 import { assertUsableArguments, parseArguments, USAGE } from "./args.js"
 import { buildPreparedContext, DEFAULT_MAX_CHARS } from "./context.js"
 import { SummarizeError } from "./errors.js"
+import { isMemoryDocument, readProjectMemory, separateMemoryInputs, validateSummaryOutput } from "./memory.js"
 import { deriveOutputPath, discoverSessionFiles, readSessionFile, resolveAgainst, toRelative } from "./paths.js"
 import { renderReport } from "./report.js"
 
@@ -15,11 +16,15 @@ function resolveBudget() {
 }
 
 function resolveInput(cwd, args) {
-  if (args.dir) {
-    const targets = discoverSessionFiles(cwd, args.dir)
-    return { mode: "directory", directory: args.dir, documents: targets.map((target) => readSessionFile(cwd, target)) }
+  const memory = args.memory ? readProjectMemory(cwd, args.memory) : null
+  const targets = args.dir ? discoverSessionFiles(cwd, args.dir) : args.files
+  const documents = targets.map((target) => readSessionFile(cwd, target))
+  // Directory discovery is for raw exports, not implicit memory selection.
+  const sessions = args.dir ? documents.filter((document) => !isMemoryDocument(document)) : documents
+  return {
+    mode: args.dir ? "directory" : "file",
+    ...separateMemoryInputs(sessions, memory),
   }
-  return { mode: "file", directory: null, documents: args.files.map((target) => readSessionFile(cwd, target)) }
 }
 
 export async function run(rawArguments, { cwd = process.cwd(), maxChars = resolveBudget() } = {}) {
@@ -34,20 +39,24 @@ export async function run(rawArguments, { cwd = process.cwd(), maxChars = resolv
       inputs: input.documents.map((document) => ({ absolute: document.absolute })),
       directory: args.dir,
       output: args.output,
+      memory: input.memory,
     })
 
-    fs.mkdirSync(path.dirname(output.absolute), { recursive: true })
+    validateSummaryOutput(cwd, output)
 
     const prepared = buildPreparedContext({
       documents: input.documents,
       outputPath: output.absolute,
       maxChars,
+      memory: input.memory,
     })
+
+    fs.mkdirSync(path.dirname(output.absolute), { recursive: true })
 
     const text = renderReport({
       status: "OK",
       cwd,
-      mode: input.mode === "directory" ? "directory" : input.documents.length > 1 ? "multi-file" : "single-file",
+      mode: input.memory ? "rolling-memory" : input.mode === "directory" ? "directory" : input.documents.length > 1 ? "multi-file" : "single-file",
       outputPath: output.absolute,
       prepared,
       error: null,

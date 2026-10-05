@@ -7,6 +7,8 @@ import { execFileSync } from "node:child_process"
 import { installCommand } from "../scripts/install-command.mjs"
 
 const FIXTURE = new URL("./fixtures/session-example.md", import.meta.url)
+const MEMORY = new URL("./fixtures/prior-memory.md", import.meta.url)
+const FOLLOWUP = new URL("./fixtures/session-followup.md", import.meta.url)
 
 function tempProject() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "oss-install-"))
@@ -76,4 +78,24 @@ test("the installed bundle reports errors without throwing", () => {
 
   assert.match(output, /STATUS: ERROR/)
   assert.match(output, /session file not found/)
+})
+
+test("the installed bundle prepares rolling memory from paths containing spaces", (t) => {
+  const root = tempProject()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  fs.copyFileSync(MEMORY, path.join(root, "Sessions", "project memory.md"))
+  fs.copyFileSync(FOLLOWUP, path.join(root, "Sessions", "new session.md"))
+  const result = installCommand(root)
+  const output = execFileSync(process.execPath, [
+    result.scriptPath,
+    '--memory "Sessions/project memory.md" -f "Sessions/new session.md" -o "Sessions/project memory.md"',
+  ], { cwd: root, encoding: "utf8" })
+
+  assert.ok(fs.existsSync(path.join(result.libraryDirectory, "memory.js")))
+  assert.match(output, /STATUS: OK/)
+  assert.match(output, /MODE: rolling-memory/)
+  assert.match(output, /MEMORY_PATH: Sessions\/project memory\.md/)
+  assert.match(output, /recall@10 is now 0\.81/)
+  assert.match(fs.readFileSync(result.commandPath, "utf8"), /PRIOR_MEMORY/)
+  assert.equal(fs.readFileSync(path.join(root, "Sessions", "project memory.md"), "utf8"), fs.readFileSync(MEMORY, "utf8"))
 })

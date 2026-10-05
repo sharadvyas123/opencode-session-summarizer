@@ -67,3 +67,21 @@ test("assertUsableArguments requires an input", () => {
 test("assertUsableArguments rejects -f combined with -d", () => {
   assert.throws(() => assertUsableArguments(parseArguments("-f a.md -d Sessions")), /cannot be combined/)
 })
+
+test("parseArguments reads quoted prior-memory paths with file and directory modes", () => {
+  const files = parseArguments('--memory "Sessions/my memory.md" -f "Sessions/new session.md" -o "Sessions/my memory.md"')
+  assert.equal(files.memory, "Sessions/my memory.md")
+  assert.deepEqual(files.files, ["Sessions/new session.md"])
+  assert.equal(files.output, "Sessions/my memory.md")
+  assert.deepEqual(files.errors, [])
+  const directory = parseArguments(["-m", "Sessions/project-summary.md", "-d", "Sessions/new"])
+  assert.equal(directory.memory, "Sessions/project-summary.md")
+  assert.equal(directory.dir, "Sessions/new")
+  assert.doesNotThrow(() => assertUsableArguments(directory))
+})
+
+test("parseArguments rejects missing, multiple, and repeated prior-memory values", () => {
+  assert.deepEqual(parseArguments("--memory").errors, ["--memory expects exactly one project summary path"])
+  assert.deepEqual(parseArguments("-m a.md b.md").errors, ["-m expects exactly one project summary path"])
+  assert.deepEqual(parseArguments("-m a.md --memory b.md").errors, ["only one prior project summary may be provided"])
+})
