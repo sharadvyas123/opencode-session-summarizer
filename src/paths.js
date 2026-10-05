@@ -66,7 +66,7 @@ export function readMarkdownFile(cwd, target, { label, missingHint, emptyHint })
 export function readSessionFile(cwd, target) {
   return readMarkdownFile(cwd, target, {
     label: "session file",
-    missingHint: "Check the path, or run /export first and save the session into the project's Sessions/ directory.",
+    missingHint: "Check the spelling and path, or run /export first and save the session into a project-local Sessions/ directory.",
     emptyHint: "Nothing to summarize. Re-export the session or pick a different file.",
   })
 }

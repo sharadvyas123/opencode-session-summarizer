@@ -52,6 +52,14 @@ test("installCommand rewrites the script reference in the command file", () => {
   assert.ok(!command.includes(".opencode/scripts/summarize-prepare.mjs"))
 })
 
+test("installCommand pins the command to the build agent", () => {
+  const root = tempProject()
+  const result = installCommand(root)
+  const command = fs.readFileSync(result.commandPath, "utf8")
+
+  assert.match(command, /\nagent: build\n/)
+})
+
 test("the installed bundle runs standalone from a fresh project", () => {
   const root = tempProject()
   const result = installCommand(root)

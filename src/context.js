@@ -1,4 +1,5 @@
 import { SummarizeError } from "./errors.js"
+import { prepareTranscript } from "./transcript.js"
 
 export const DEFAULT_MAX_CHARS = 12000
 const DEFAULT_MAX_BLOCK_CHARS = 1200
@@ -7,6 +8,7 @@ const DEFAULT_MAX_SIGNALS = 12
 const MAX_LISTED_FILES = 40
 
 const HEADING = /^#{1,6}\s+/
+const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/
 const USER_ROLE = /^(user|human|me)\b/i
 const FILLER = /^(hi|hey|hello|thanks|thank you|ok|okay|cool|nice|got it|sounds good|good job|please continue|continue|go on)\b[\s!.]*$/i
 const HIGH_SIGNAL =
@@ -33,9 +35,23 @@ export function splitBlocks(markdown) {
   const lines = String(markdown ?? "").replace(/\r\n?/g, "\n").split("\n")
   const blocks = []
   let current = { heading: "", lines: [] }
+  let fence = null
 
   for (const line of lines) {
-    if (HEADING.test(line)) {
+    const fenceMatch = line.match(FENCE)
+    if (fenceMatch) {
+      const marker = fenceMatch[1][0]
+      const markerLength = fenceMatch[1].length
+      if (!fence) {
+        fence = { marker, length: markerLength }
+      } else if (fence.marker === marker && markerLength >= fence.length && !fenceMatch[2].trim()) {
+        fence = null
+      }
+      current.lines.push(line)
+      continue
+    }
+
+    if (!fence && HEADING.test(line)) {
       if (current.lines.some((entry) => entry.trim())) blocks.push(current)
       current = { heading: line.replace(HEADING, "").trim(), lines: [line] }
       continue
@@ -51,7 +67,8 @@ export function splitBlocks(markdown) {
 
 export function truncateCodeBlock(match) {
   if (match.length <= DEFAULT_CODE_SAMPLE_CHARS) return match
-  return `${match.slice(0, DEFAULT_CODE_SAMPLE_CHARS)}\n[code block truncated: ${match.length} chars]`
+  const closingFence = match.trimEnd().match(/(?:^|\n)(`{3,}|~{3,})[ \t]*$/)?.[1] ?? "```"
+  return `${match.slice(0, DEFAULT_CODE_SAMPLE_CHARS)}\n[code block truncated: ${match.length} chars]\n${closingFence}`
 }
 
 export function reduceBlock(text, { maxChars = DEFAULT_MAX_BLOCK_CHARS } = {}) {
@@ -87,14 +104,24 @@ function shortenLine(line, limit = 220) {
 }
 
 export function extractSignals(documents, { maxPerSignal = DEFAULT_MAX_SIGNALS } = {}) {
-  const allText = documents.map((document) => document.content).join("\n")
+  const allText = documents.map((document) => prepareTranscript(document.content)).join("\n")
   const lines = allText.split(/\r?\n/)
+  const narrative = lines.filter((line) => !/^(?:TOOL|FILE|COMMAND|RESULT|NAME|URL|COVERAGE|OUTPUT_PATH):/.test(line))
 
   const files = []
   for (const match of allText.matchAll(FILE_REFERENCE)) files.push(match[0])
-  const errors = lines.filter((line) => /^(error|fatal|panic|exception|fail)/i.test(line.trim()) || /\b(error|exception|traceback)\b/i.test(line))
-  const commands = lines.filter((line) => looksLikeCommand(line))
-  const openItems = lines.filter((line) => OPEN_ITEM.test(line))
+  const errorLines = [...narrative, ...lines.filter((line) => line.startsWith("RESULT: ")).map((line) => line.slice(8))]
+  const errors = errorLines.filter((line) => /^(error|fatal|panic|exception|fail)/i.test(line.trim()) || /\b(error|exception|traceback)\b/i.test(line))
+  const commands = lines.map((line) => line.replace(/^COMMAND: /, "")).filter((line) => looksLikeCommand(line))
+  const latestTasks = new Map()
+  for (const line of narrative) {
+    const task = line.match(/^TASK \(([^)]+)\): (.+)$/)
+    if (task) latestTasks.set(task[2], { status: task[1], line })
+  }
+  const openItems = [
+    ...narrative.filter((line) => !line.startsWith("TASK (") && OPEN_ITEM.test(line)),
+    ...[...latestTasks.values()].filter((task) => task.status === "pending" || task.status === "in_progress").map((task) => task.line),
+  ]
 
   return {
     filesMentioned: unique(files).slice(0, MAX_LISTED_FILES),
@@ -104,13 +131,23 @@ export function extractSignals(documents, { maxPerSignal = DEFAULT_MAX_SIGNALS }
   }
 }
 
+function blockBody(block) {
+  return block.text.replace(/^#{1,6}[^\n]*(?:\n|$)/, "").replace(/^---[ \t]*$/gm, "").trim()
+}
+
 function scoreBlock(block, position, total) {
   let score = 0
-  const text = block.text
+  // Large tool-only turns should not outrank the user's requirements and the
+  // agent's actual decisions just because they mention many files or tasks.
+  const text = blockBody(block)
+    .split("\n")
+    .filter((line) => !/^(?:TOOL|FILE|COMMAND|RESULT|NAME|URL):|^TASK \(|^\[.*omitted\]$/.test(line))
+    .join("\n")
+    .trim()
 
   if (USER_ROLE.test(block.heading)) score += 3
   if (HIGH_SIGNAL.test(text)) score += 2
-  if (FILE_REFERENCE_TEST.test(text)) score += 1
+  if (FILE_REFERENCE_TEST.test(block.text)) score += 1
   if (OPEN_ITEM.test(text)) score += 2
   if (looksLikeCommand(text)) score += 1
   if (text.length > 240) score += 1
@@ -125,12 +162,13 @@ export function selectBlocks(blocks, { maxChars = DEFAULT_MAX_CHARS } = {}) {
     block,
     position,
     score: scoreBlock(block, position, blocks.length),
-    filler: block.text.length < 90 && FILLER.test(block.text.trim()),
+    filler: !blockBody(block) || (blockBody(block).length < 90 && FILLER.test(blockBody(block))),
   }))
 
   const ranked = [...scored].sort((left, right) => right.score - left.score)
   const keep = new Map()
-  const anchors = [...new Set([scored[0]?.position, scored[scored.length - 1]?.position])].filter(
+  const relevant = scored.filter((entry) => !entry.filler)
+  const anchors = [...new Set([relevant[0]?.position, relevant[relevant.length - 1]?.position])].filter(
     (position) => position !== undefined,
   )
 
@@ -193,7 +231,7 @@ export function buildPreparedContext({ documents, outputPath, maxChars = DEFAULT
     )
   }
 
-  const blocks = documents.flatMap((document) => splitBlocks(document.content).map((block) => ({
+  const blocks = documents.flatMap((document) => splitBlocks(prepareTranscript(document.content)).map((block) => ({
     ...block,
     source: document.relative,
   })))

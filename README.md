@@ -36,7 +36,7 @@ local helper (deterministic, no LLM)
   1. parse arguments
   2. validate paths, refuse unsafe writes
   3. discover / read session markdown and optional prior memory
-  4. split transcript into blocks
+  4. reduce exported tool payloads to evidence; split transcript outside code fences
   5. preserve full prior memory; score/filter new transcript context within budget
   6. extract signals (files, errors, commands, open items)
   7. choose a safe output path
@@ -55,6 +55,11 @@ tools and hooks, but there is no public API for registering a slash command, so
 a custom command is the supported path for `/summarize`. Everything expensive,
 repetitive, and safety-critical stays in local deterministic code; the model is
 only used for the part that genuinely needs a model.
+
+The command is explicitly assigned to OpenCode's `build` agent because it must
+write the generated Markdown file. This matters when the current conversation is
+using the read-only `plan` agent: the helper can prepare a report there, but the
+summary cannot be written until the command runs with an editing agent.
 
 ## Install
 
@@ -83,7 +88,7 @@ opencode
 
 No global install and no `opencode.json` change is required.
 After installing or updating the command, quit and restart OpenCode so it loads
-the new command template.
+the new command template and its `build` agent assignment.
 
 ## Usage
 
@@ -97,6 +102,45 @@ Inside OpenCode:
 /summarize --memory Sessions/project-summary.md -f Sessions/session004.md -o Sessions/project-summary.md
 /summarize --help
 ```
+
+For example, if your exported file is named
+`Project_sessions/session-ses_123.md`, run this inside OpenCode:
+
+```text
+/summarize -f Project_sessions/session-ses_123.md -o Project_sessions/session-ses_123-summary.md
+```
+
+The input filename must match exactly. `/summarize` by itself does not capture
+the current conversation; use `/export` first, then pass the exported Markdown
+file with `-f` (or its containing directory with `-d`).
+
+### `/summarize` and `/compact`
+
+| Command | Purpose |
+| --- | --- |
+| `/compact` | Shorten the active conversation's context so that session can continue. |
+| This project's `/summarize -f ...` | Write a structured, project-local Markdown memory file from exported sessions. |
+| `/summarize --memory ... -f ... -o ...` | Merge new exports into existing persistent project memory. |
+
+OpenCode also uses `/summarize` as a built-in alias for `/compact`. Installing
+this custom command overrides that name for the project; use `/compact` for
+active-session compaction.
+
+The custom command's expanded prompt and helper report may appear in the
+conversation. `STATUS: OK` means the inputs are prepared, not that a summary has
+already been saved. The command then writes the file and confirms its output
+path. It runs with the `build` agent even when invoked from a Plan conversation.
+
+After generating memory, start a fresh OpenCode session and reference it:
+
+```text
+Read @Project_sessions/session-ses_123-summary.md and continue with its next steps.
+```
+
+If an older command still says it cannot write in Plan mode, quit and restart
+OpenCode after updating the command. If a file is missing, check its exact name:
+for the original example export, use `Project_sessions/session-ses_ef55.md`,
+with `ses_`, not `sess_`.
 
 | Flag                | Meaning                                                        |
 | ------------------- | -------------------------------------------------------------- |
@@ -188,6 +232,13 @@ work, and cache invalidation/profiling remain open.
 
 ### Token efficiency
 
+Before scoring or extracting signals, the helper replaces exported file reads,
+source-code edits, documentation, and nested summarizer reports with concise
+tool evidence. It retains paths, executed commands, test outcomes, task states,
+and user answers. This keeps quoted test-fixture metrics and tasks from becoming
+facts about the project being summarized. Markdown headings inside fenced
+blocks are not treated as conversation boundaries.
+
 `SUMMARIZE_MAX_CHARS` controls the context budget (default `12000`):
 
 ```bash
@@ -247,6 +298,7 @@ Tests require no LLM and no network. They cover argument parsing, validation,
 discovery, output derivation, context reduction, signal extraction, error
 reporting, rolling-memory preparation, strict shared budgets, raw-file
 preservation, and an install-and-run of the standalone bundle. They verify the
+command's Build-agent routing, fence-aware parsing, quoted-payload exclusion,
 context and merge instructions; the semantic summary/update is performed by the
 current OpenCode model.
 
@@ -256,8 +308,10 @@ Done: V0–V4 (command registration, single file, multiple files, directory,
 explicit output) and V5 (rolling `old summary + new session -> updated summary`).
 V0 command registration was verified with `opencode debug config`.
 
-Not done yet: `/summarize` current-session mode, configurable schema, and
-smarter reduction (V6).
+Export-aware reduction is implemented: tool-payload preprocessing, fence-aware
+blocks, filler filtering, and shared budgets.
+Not done yet: `/summarize` current-session mode, configurable schema, and more
+advanced context selection (V6).
 No vector database, embeddings, RAG, database, GUI, or telemetry.
 
 ## License

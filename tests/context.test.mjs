@@ -22,10 +22,60 @@ test("splitBlocks handles files without headings", () => {
   assert.equal(blocks.length, 1)
 })
 
+test("splitBlocks does not treat headings inside fenced tool output as transcript blocks", () => {
+  const blocks = splitBlocks([
+    "## assistant",
+    "",
+    "**Output:**",
+    "```markdown",
+    "# Nested output",
+    "## user",
+    "",
+    "Example text",
+    "```",
+    "",
+    "The real assistant message continues here.",
+    "## user",
+    "",
+    "The next real turn starts here.",
+  ].join("\n"))
+
+  assert.equal(blocks.length, 2)
+  assert.equal(blocks[0].heading, "assistant")
+  assert.match(blocks[0].text, /# Nested output/)
+  assert.match(blocks[0].text, /The real assistant message continues here\./)
+  assert.equal(blocks[1].heading, "user")
+})
+
+test("splitBlocks tracks fence length, marker type, and closing-line syntax", () => {
+  for (const fence of ["````", "~~~~"]) {
+    const blocks = splitBlocks([
+      "## user",
+      `${fence}markdown`,
+      "```",
+      "~~~",
+      `${fence}text`,
+      "## quoted heading",
+      fence,
+      "## assistant",
+      "Actual decision.",
+    ].join("\n"))
+
+    assert.deepEqual(blocks.map((block) => block.heading), ["user", "assistant"])
+    assert.match(blocks[0].text, /## quoted heading/)
+  }
+})
+
+test("splitBlocks does not promote headings after an unclosed fence", () => {
+  const blocks = splitBlocks("## user\n\n```markdown\n## quoted heading\nunfinished output")
+  assert.equal(blocks.length, 1)
+})
+
 test("reduceBlock truncates large code blocks", () => {
   const big = `intro\n\n\`\`\`ts\n${"const x = 1\n".repeat(80)}\`\`\`\n`
   const reduced = reduceBlock(big, { maxChars: 4000 })
   assert.ok(reduced.includes("[code block truncated:"))
+  assert.ok(reduced.endsWith("```"))
 })
 
 test("reduceBlock respects the block budget", () => {
@@ -56,6 +106,14 @@ test("selectBlocks keeps the first and last block and drops filler", () => {
   assert.ok(selection.kept.some((entry) => entry.includes("objective block")))
   assert.ok(selection.kept.some((entry) => entry.includes("final block")))
   assert.equal(selection.droppedFiller, 1)
+})
+
+test("selectBlocks drops exported greetings including their role headers and separators", () => {
+  const blocks = splitBlocks("## User\n\nhi\n\n---\n\n## Assistant\n\nImplement rolling memory.\n\n---\n\n## User\n\nthanks\n\n---")
+  const selection = selectBlocks(blocks)
+  assert.equal(selection.droppedFiller, 2)
+  assert.equal(selection.kept.length, 1)
+  assert.match(selection.kept[0], /Implement rolling memory/)
 })
 
 test("selectBlocks honours the context budget", () => {

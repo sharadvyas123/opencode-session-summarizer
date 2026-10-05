@@ -15,7 +15,13 @@ Options:
 
 Bare paths are treated as session files. Directory mode reads *.md / *.markdown and
 skips artifacts that were already produced by this tool. A summary passed with
--f is recognized as prior memory. Updating existing memory requires explicit -o.`
+-f is recognized as prior memory. Updating existing memory requires explicit -o.
+
+Run inside OpenCode using the exact exported filename, for example:
+  /summarize -f Project_sessions/session-ses_ef55.md
+
+Running /summarize alone does not capture the current session. Use /export first.
+/compact compacts the active conversation; this command writes persistent memory.`
 
 const FILES_FLAGS = new Set(["-f", "--file", "--files"])
 const DIR_FLAGS = new Set(["-d", "--dir", "--directory"])
@@ -156,7 +162,7 @@ export function assertUsableArguments(parsed) {
   if (parsed.files.length === 0 && !parsed.dir) {
     throw new SummarizeError(
       "no session input provided",
-      'Pass an exported session file with -f Sessions/<name>.md, or a directory with -d Sessions/.',
+      'Use /export first, then pass the exact exported filename with -f Sessions/<name>.md, or a directory with -d Sessions/. Running /summarize alone does not capture the current session.',
     )
   }
   if (parsed.files.length > 0 && parsed.dir) {
